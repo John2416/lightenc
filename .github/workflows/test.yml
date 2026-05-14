@@ -1,0 +1,56 @@
+name: test
+
+on:
+  workflow_dispatch:
+    inputs:
+      extended:
+        description: "Run extended backend encoding tests"
+        required: false
+        default: true
+        type: boolean
+      strict_backend:
+        description: "Fail if a platform backend does not support an encoding"
+        required: false
+        default: false
+        type: boolean
+
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: Linux
+          - os: windows-latest
+            name: Windows
+          - os: macos-latest
+            name: macOS
+
+    runs-on: ${{ matrix.os }}
+    name: Build and Test (${{ matrix.name }})
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Show Zig version
+        run: zig version
+
+      - name: Run portable tests
+        run: zig build test
+
+      - name: Run system backend tests
+        run: zig build test-system
+
+      - name: Run extended backend tests
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.extended }}
+        run: zig build test-system -Dextended=true
+
+      - name: Run strict backend tests
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.strict_backend }}
+        run: zig build test-system -Dextended=true -Dstrict-backend=true
