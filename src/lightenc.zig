@@ -542,45 +542,64 @@ const windows = struct {
         };
     }
 
-    fn windowsMultiByteFlagsSupported(cp: UINT) bool {
-        return switch (cp) {
-            // These Windows code pages require dwFlags == 0 for MultiByteToWideChar.
-            //
-            // 42          = SYMBOL
-            // 50220..    = ISO-2022-JP / ISO-2022-KR / ISO-2022-CN variants
-            // 57002..    = ISCII variants
-            // 65000      = UTF-7
-            42,
-            50220...50229,
-            57002...57011,
-            65000,
-            => false,
+    const WindowsCodePageTraits = struct {
+        /// MultiByteToWideChar strict mode may use MB_ERR_INVALID_CHARS.
+        mb_strict_flags: bool = true,
 
-            else => true,
-        };
-    }
+        /// WideCharToMultiByte strict mode may use WC_* flags.
+        wc_strict_flags: bool = true,
 
-    fn windowsWideFlagsSupported(cp: UINT) bool {
-        return switch (cp) {
-            // Windows requires dwFlags == 0 for these stateful / special encodings.
-            // 54936 = GB18030
-            // 50220...50229 = ISO-2022-JP/KR/CN variants
-            // 57002...57011 = ISCII variants
-            42,
-            50220...50229,
-            57002...57011,
-            65000,
-            54936,
-            => false,
-            else => true,
-        };
-    }
+        /// WideCharToMultiByte may use lpDefaultChar/lpUsedDefaultChar.
+        wc_default_char: bool = true,
+    };
 
-    fn windowsDefaultCharSupported(cp: UINT) bool {
+    fn windowsCodePageTraits(cp: UINT) WindowsCodePageTraits {
         return switch (cp) {
-            // UTF-7, UTF-8 and GB18030 do not accept lpDefaultChar/lpUsedDefaultChar.
-            65000, 65001, 54936 => false,
-            else => true,
+            // SYMBOL
+            42 => .{
+                .mb_strict_flags = false,
+                .wc_strict_flags = false,
+                .wc_default_char = true,
+            },
+
+            // ISO-2022-JP / ISO-2022-KR / ISO-2022-CN variants.
+            50220...50229 => .{
+                .mb_strict_flags = false,
+                .wc_strict_flags = false,
+                .wc_default_char = false,
+            },
+
+            // ISCII family.
+            57002...57011 => .{
+                .mb_strict_flags = false,
+                .wc_strict_flags = false,
+                .wc_default_char = true,
+            },
+
+            // UTF-7.
+            65000 => .{
+                .mb_strict_flags = false,
+                .wc_strict_flags = false,
+                .wc_default_char = false,
+            },
+
+            // UTF-8.
+            65001 => .{
+                .mb_strict_flags = true,
+                .wc_strict_flags = true,
+                .wc_default_char = false,
+            },
+
+            // GB18030.
+            // Decode side can use MB_ERR_INVALID_CHARS, but encode side must not
+            // use WC_NO_BEST_FIT_CHARS or default-char pointers.
+            54936 => .{
+                .mb_strict_flags = true,
+                .wc_strict_flags = false,
+                .wc_default_char = false,
+            },
+
+            else => .{},
         };
     }
 
@@ -654,11 +673,21 @@ const windows = struct {
         const cp = windowsCodePage(from) orelse return error.UnsupportedEncoding;
         if (IsValidCodePage(cp) == 0) return error.UnsupportedEncoding;
 
-        const flags: DWORD = switch (options.policy) {
-            .strict => MB_ERR_INVALID_CHARS,
-            .replace => 0,
+        const traits = windowsCodePageTraits(cp);
+
+        var flags: DWORD = 0;
+
+        switch (options.policy) {
+            .strict => {
+                if (traits.mb_strict_flags) {
+                    flags = MB_ERR_INVALID_CHARS;
+                }
+            },
+            .replace => {
+                flags = 0;
+            },
             .ignore => return error.UnsupportedPolicy,
-        };
+        }
 
         const in_len = try checkedCLen(input.len);
         const needed = MultiByteToWideChar(cp, flags, input.ptr, in_len, null, 0);
@@ -696,30 +725,25 @@ const windows = struct {
         var default_ptr: ?[*]const u8 = null;
         var used_ptr: ?*BOOL = null;
 
-        const can_use_wide_flags = windowsWideFlagsSupported(cp);
-        const can_use_default_char = windowsDefaultCharSupported(cp);
+        const traits = windowsCodePageTraits(cp);
 
         switch (options.policy) {
             .strict => {
-                if (to == .utf8 and can_use_wide_flags) {
+                if (to == .utf8 and traits.wc_strict_flags) {
                     flags = WC_ERR_INVALID_CHARS;
-                } else if (can_use_wide_flags) {
+                } else if (traits.wc_strict_flags) {
                     flags = WC_NO_BEST_FIT_CHARS;
 
-                    if (can_use_default_char) {
+                    if (traits.wc_default_char) {
                         default_ptr = &default_char;
                         used_ptr = &used_default;
                     }
                 } else {
-                    // Some Windows code pages, notably GB18030 / CP54936,
-                    // require dwFlags == 0 and default-char pointers == NULL.
-                    //
-                    // Strict unrepresentable-character detection is weaker here.
                     flags = 0;
                 }
             },
             .replace => {
-                if (can_use_default_char) {
+                if (traits.wc_default_char) {
                     default_ptr = &default_char;
                 }
             },
