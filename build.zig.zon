@@ -1,0 +1,13 @@
+.{
+    .name = .lightenc,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .paths = .{
+        "LICENCE",
+        "README.md",
+        "build.zig",
+        "build.zig.zon",
+        "src/lightenc.zig",
+    },
+    .fingerprint = 0xc57f280e700f8b8a,
+}
